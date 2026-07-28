@@ -137,6 +137,47 @@ deliberately.
 
 ---
 
+## Tests
+
+```bash
+pip install -r requirements.txt
+pytest tests/ -v
+```
+
+21 unit tests cover position sizing and the daily circuit breakers in `risk.py`.
+
+The suite checks behavior rather than constants — thresholds are read from `config.py`, so
+retuning risk parameters doesn't invalidate the tests. What they assert:
+
+- A tighter stop must permit more contracts, and MES must size smaller than MNQ at the same
+  stop distance, since contract point value is the denominator
+- Position size never rounds down to zero, however wide the stop
+- Ranging-market and news damping can only reduce size, never increase it
+- Every circuit breaker actually blocks: max trades, daily loss, profit lock, consecutive
+  losses
+- The 80% warning fires *strictly before* the hard stop — a warning that triggers at the same
+  moment as the block serves no purpose
+
+`RiskManager` loads persistent state from disk on construction, so the test fixture points
+`STATE_FILE` at a temp directory via `monkeypatch`. The tests never read or write real
+trading state, and results don't drift depending on the day they're run.
+
+---
+
+## Tooling
+
+`scrub_check.sh` is a pre-commit secret scanner written for this repo. It scans tracked files
+and the full commit history for hardcoded credentials, verifies `.env` isn't tracked, and
+flags state or log files that shouldn't be committed.
+
+```bash
+./scrub_check.sh
+```
+
+It exits non-zero on a finding, so it can be wired into a pre-commit hook or CI step.
+
+---
+
 ## Status
 
 Running in observe mode against live data. The execution path is implemented and tested
@@ -144,7 +185,7 @@ against the broker's payload schema, but remains gated.
 
 ## Stack
 
-Python · WebSockets · OAuth 2.0 · REST APIs · pandas · asyncio
+Python · WebSockets · OAuth 2.0 · REST APIs · pandas · asyncio · pytest
 
 ---
 
