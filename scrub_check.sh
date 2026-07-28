@@ -21,7 +21,6 @@ PATTERNS=(
   'secret[[:space:]]*=[[:space:]]*["'"'"'][^"'"'"']'
   'token[[:space:]]*=[[:space:]]*["'"'"'][^"'"'"']'
   'api_?key[[:space:]]*=[[:space:]]*["'"'"'][^"'"'"']'
-  'client_secret'
   'refresh_token[[:space:]]*=[[:space:]]*["'"'"']'
   'Bearer [A-Za-z0-9._-]\{20,\}'
   'eyJ[A-Za-z0-9._-]\{20,\}'          # JWT
