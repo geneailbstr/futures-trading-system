@@ -1,0 +1,22 @@
+# Core data & analysis
+numpy==2.4.6
+pandas==3.0.3
+ta==0.11.0
+
+# Market data
+databento==0.80.0
+yfinance==1.4.1
+
+# HTTP & streaming
+httpx==0.28.1
+requests==2.34.2
+websockets==16.0
+certifi==2026.6.17
+
+# LLM (sentiment)
+anthropic==0.109.2
+
+# Utilities
+python-dotenv==1.2.2
+schedule==1.2.2
+pytz==2026.2
