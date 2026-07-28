@@ -72,3 +72,4 @@ manual_test_order.py
 
 # ---- Stale nested snapshot of the codebase ----
 trading-bot/
+state.json
