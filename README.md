@@ -33,13 +33,15 @@ flowchart LR
     C --> D[strategy.py<br/>EMA / RSI / VWAP / ATR]
     E[ecocal.py<br/>event blackouts] --> D
     F[sentiment.py] --> D
-    D --> G[risk.py<br/>position + loss limits]
-    G --> H{EXECUTION_ENABLED}
-    H -- false --> I[simulator.py<br/>observe mode]
-    H -- true --> J[pmt.py<br/>webhook to broker]
-    I --> K[(sim_state.json)]
-    J --> K
-    G --> L[logger.py / notify.py]
+    D --> G[risk.py<br/>sizing + loss limits]
+    G --> H{SIMULATION_MODE}
+    H -- true --> I[simulator.py<br/>paper fills]
+    H -- false --> J{PMT_TEMPLATE_VERIFIED}
+    J -- false --> K[send blocked]
+    J -- true --> L[pmt.py<br/>webhook to broker]
+    I --> M[(sim_state.json)]
+    L --> M
+    G --> N[logger.py / notify.py]
 ```
 
 ### Modules
@@ -47,59 +49,77 @@ flowchart LR
 | File | Responsibility |
 |---|---|
 | `bot.py` | Main event loop; wires every component together |
-| `config.py` | Central configuration and runtime toggles |
-| `marketdata.py` | Feed abstraction, candle assembly, resampling |
+| `config.py` | Central configuration, mode flags, and risk parameters |
+| `marketdata.py` | Feed abstraction, candle assembly, provider fallback chain |
 | `tt_marketdata.py` | tastytrade/DXLink live feed: auth, handshake, subscription |
 | `strategy.py` | Signal generation across multiple indicators and timeframes |
-| `risk.py` | Position sizing, stop placement, daily loss and profit-lock limits |
-| `simulator.py` | Paper execution engine used for observe mode |
+| `risk.py` | Position sizing, stop placement, daily loss and drawdown limits |
+| `simulator.py` | Paper execution engine with realistic cost modeling |
 | `pmt.py` | Live order routing via webhook payload construction |
+| `tradovate.py` | Broker account interface |
 | `ecocal.py` | Economic-calendar blackout windows |
-| `sentiment.py` | Supplementary signal input |
+| `sentiment.py` | LLM-assisted supplementary signal input |
 | `logger.py` | Structured logging |
-| `notify.py` | Alerting on fills, errors, and limit breaches |
+| `notify.py` | Email alerting on fills, errors, and limit breaches |
 | `reset_for_live.py` | Session state archiving and reset helper |
+
+---
+
+## Execution gating
+
+Two independent flags stand between a signal and a real order. Both live in `config.py`.
+
+| Flag | Default | Effect |
+|---|---|---|
+| `SIMULATION_MODE` | `True` | Routes fills to `simulator.py`. No broker contact. |
+| `USE_REAL_DATA` | `True` | Pulls the live tastytrade feed even while simulating. |
+| `PMT_TEMPLATE_VERIFIED` | gate | Blocks webhook sends until the payload schema is confirmed. |
+
+The combination that matters is `SIMULATION_MODE = True` with `USE_REAL_DATA = True` —
+**observe mode**. Real market data, real signal generation, real risk evaluation, simulated
+fills. It's how the system was validated against live conditions with no capital exposed.
+
+Turning off `SIMULATION_MODE` alone is not enough to place an order; the webhook gate has to
+be satisfied separately.
 
 ---
 
 ## Engineering problems worth reading about
 
 **A vendor SDK that couldn't authenticate.**
-The official client failed partway through the OAuth flow. Rather than abandon the data
-source, I traced the request sequence and reimplemented the token exchange with direct HTTP
-calls, adding a token cache with TTL-based refresh so the system doesn't re-authenticate on
-every reconnect.
+The official tastytrade client failed partway through the OAuth flow. Rather than abandon the
+data source, I traced the request sequence and reimplemented the token exchange with direct
+`httpx` calls, caching the token with TTL-based refresh so the system doesn't
+re-authenticate on every reconnect. The SDK is no longer a dependency.
 
 **An undocumented streaming handshake.**
-The market data WebSocket requires a strict ordered sequence — setup, authorization,
-channel request, channel open, feed configuration, subscription — with the connection
-silently dropping on any deviation. Getting this right meant reading protocol traffic rather
-than documentation.
+The DXLink WebSocket requires a strict ordered sequence — setup, authorization, channel
+request, channel open, feed configuration, subscription — and drops the connection silently
+on any deviation. Getting it right meant reading protocol traffic rather than documentation.
 
 **Bad data that looked like good signals.**
-Two separate bugs produced plausible-but-wrong output. A volume filter was being inflated by
-single spike bars, which I fixed by switching from a mean to a rolling median. Resampled
-proxy data was emitting zero-volume bars, fixed with forward-fill. Both were invisible until
-I compared simulated fills against what the market actually did — a reminder that in data
-pipelines, silence is not the same as correctness.
+Two bugs produced plausible-but-wrong output. A volume filter was being inflated by single
+spike bars, fixed by switching from a mean to a rolling median. Resampled proxy data emitted
+zero-volume bars, fixed with forward-fill. Both were invisible until simulated fills were
+compared against what the market actually did — in data pipelines, silence is not the same as
+correctness.
+
+**Provider fallback.**
+Market data degrades through a chain: Databento for real futures data, then Finnhub, then
+Alpha Vantage as proxy sources. Each fallback is lower fidelity, so the system logs which
+tier it's running on rather than pretending the data is equivalent.
 
 **Crash recovery.**
-An early version lost its position state on a mid-session restart. State is now persisted
-after every trade, so the system resumes from disk rather than from a blank slate.
-
-**Refusing to run before it was ready.**
-The system has an `EXECUTION_ENABLED` flag. It ran for an extended period in observe mode —
-real feed, real signals, order dispatch blocked — so signal quality could be validated
-against live conditions with no capital at risk. Shipping fast is easy; the harder call is
-building the thing that stops you from shipping too early.
+An early version lost position state on a mid-session restart. State now persists after every
+trade, so the system resumes from disk rather than from a blank slate.
 
 ---
 
 ## Running it
 
 ```bash
-git clone https://github.com/<your-handle>/<repo-name>.git
-cd <repo-name>
+git clone https://github.com/geneailbstr/futures-trading-system.git
+cd futures-trading-system
 
 python3 -m venv venv
 source venv/bin/activate
@@ -111,15 +131,16 @@ cp .env.example .env
 python bot.py
 ```
 
-Defaults are deliberately safe: `USE_REAL_DATA=false` and `EXECUTION_ENABLED=false`.
-The system will not place an order until both are explicitly turned on.
+Credentials come from `.env`. Mode flags and risk parameters live in `config.py`, which ships
+with `SIMULATION_MODE = True` — the system will not contact a broker until that is changed
+deliberately.
 
 ---
 
 ## Status
 
-Currently running in observe mode against live data. Execution path is implemented and
-tested against the broker's schema but remains gated behind the execution flag.
+Running in observe mode against live data. The execution path is implemented and tested
+against the broker's payload schema, but remains gated.
 
 ## Stack
 
