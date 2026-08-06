@@ -56,7 +56,6 @@ flowchart LR
 | `risk.py` | Position sizing, stop placement, daily loss and drawdown limits |
 | `simulator.py` | Paper execution engine with realistic cost modeling |
 | `pmt.py` | Live order routing via webhook payload construction |
-| `tradovate.py` | Broker account interface |
 | `ecocal.py` | Economic-calendar blackout windows |
 | `sentiment.py` | LLM-assisted supplementary signal input |
 | `logger.py` | Structured logging |
