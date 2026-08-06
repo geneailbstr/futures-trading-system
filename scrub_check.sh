@@ -60,8 +60,11 @@ fi
 
 banner "4. Scanning git HISTORY (secrets survive deletion)"
 if [[ -d .git ]] && git rev-parse HEAD >/dev/null 2>&1; then
-  hist=$(git log --all -p --no-color 2>/dev/null \
-          | grep -inE 'client_secret|refresh_token|api_?key *= *["'"'"']|password *= *["'"'"']' \
+  # Require an actual quoted literal value after the key, not just the
+  # key name appearing (os.getenv("X_CLIENT_SECRET") and dict keys like
+  # "client_secret": SOME_VAR are legitimate code, not leaked secrets).
+  hist=$(git log --all -p --no-color -- . ':(exclude)scrub_check.sh' ':(exclude).env.example' 2>/dev/null \
+          | grep -inE '(client_secret|refresh_token|api_?key|password)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"'][A-Za-z0-9]{8,}' \
           | head -20 || true)
   if [[ -n "$hist" ]]; then
     flag "possible secrets in commit history:"

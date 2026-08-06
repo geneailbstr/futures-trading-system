@@ -3,12 +3,16 @@ tradovate.py — Direct Tradovate API connection
 Handles authentication, market data, and order placement
 """
 
+import os
+import uuid
 import requests
 import time
 import json
 import pandas as pd
 from datetime import datetime, timedelta
 import config
+
+_ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
 # ─────────────────────────────────────────
 # API ENDPOINTS
@@ -39,18 +43,61 @@ _account_spec     = None
 # ─────────────────────────────────────────
 # AUTHENTICATION
 # ─────────────────────────────────────────
+def _require_credentials():
+    """Fail loudly instead of sending Tradovate a blank auth field.
+
+    Called after _ensure_device_id() so a fresh install's not-yet-persisted
+    deviceId doesn't trip this — this check is the safety net for a write
+    that silently failed, not the primary path for populating deviceId.
+    """
+    missing = []
+    if not config.TRADOVATE_USERNAME:   missing.append("TRADOVATE_USERNAME")
+    if not config.TRADOVATE_PASSWORD:   missing.append("TRADOVATE_PASSWORD")
+    if not config.TRADOVATE_SEC:        missing.append("TRADOVATE_SEC")
+    if not config.TRADOVATE_DEVICE_ID:  missing.append("TRADOVATE_DEVICE_ID")
+    if missing:
+        raise RuntimeError(
+            "Missing required Tradovate credential(s) in .env: "
+            f"{', '.join(missing)}. Copy .env.example to .env and fill "
+            "these in before authenticating."
+        )
+
+
+def _ensure_device_id():
+    """Return the persisted Tradovate deviceId, minting one on first run.
+
+    Tradovate treats a changing deviceId as a new device, so this must be
+    generated once and reused on every run rather than regenerated per
+    session.
+    """
+    if config.TRADOVATE_DEVICE_ID:
+        return config.TRADOVATE_DEVICE_ID
+
+    new_id = str(uuid.uuid4())
+    with open(_ENV_PATH, "a") as f:
+        f.write(f"\nTRADOVATE_DEVICE_ID={new_id}\n")
+
+    config.TRADOVATE_DEVICE_ID = new_id
+    os.environ["TRADOVATE_DEVICE_ID"] = new_id
+    print(f"⚠️  No TRADOVATE_DEVICE_ID found — generated and saved a new one to .env: {new_id}")
+    return new_id
+
+
 def authenticate():
     """Log into Tradovate and get access token"""
     global _access_token, _token_expiry, _account_id, _account_spec
+
+    device_id = _ensure_device_id()
+    _require_credentials()
 
     payload = {
     "name":        config.TRADOVATE_USERNAME,
     "password":    config.TRADOVATE_PASSWORD,
     "appId":       "Sample App",
     "appVersion":  "1.0",
-    "cid":         8,
-    "deviceId":    "123e4567-e89b-12d3-a456-426614174000",
-    "sec":         "bf0d03e2-59b7-4cb8-9a9d-a6c6eedde854"
+    "cid":         config.TRADOVATE_CID,
+    "deviceId":    device_id,
+    "sec":         config.TRADOVATE_SEC
 }
 
     try:

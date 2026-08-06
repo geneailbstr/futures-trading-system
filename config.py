@@ -16,6 +16,9 @@ ACCOUNT_ID           = os.getenv("TRADOVATE_ACCOUNT_ID")
 TRADOVATE_USERNAME   = os.getenv("TRADOVATE_USERNAME")
 TRADOVATE_PASSWORD   = os.getenv("TRADOVATE_PASSWORD")
 TRADOVATE_ENV        = os.getenv("TRADOVATE_ENV", "demo")  # demo or live
+TRADOVATE_CID        = int(os.getenv("TRADOVATE_CID") or 8)  # 8 = Tradovate's public "Sample App" cid
+TRADOVATE_SEC        = os.getenv("TRADOVATE_SEC")
+TRADOVATE_DEVICE_ID  = os.getenv("TRADOVATE_DEVICE_ID")
 
 # ─────────────────────────────────────────
 # INSTRUMENTS
