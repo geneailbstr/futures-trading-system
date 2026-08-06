@@ -41,8 +41,9 @@ by a hiring manager.
 - Timeframes: 5-minute and 15-minute
 - Entry: EMA crossover confirmed by RSI and VWAP position
 - Stops: ATR-based
-- Volume filter uses a **rolling median**, multiplier `1.0x`. Do not revert to
-  a mean — spike bars inflate it.
+- Volume filter uses a **rolling median**, multiplier `0.7x` (loosened from an
+  initial `1.0x` — see `config.py`). Do not revert to a mean — spike bars
+  inflate it.
 - `PROFIT_LOCK_PCT = 0.025`, sized to stay under the $750 daily consistency
   ceiling. Changing this changes eval compliance.
 - The MFFU consistency rule is a **look-back ratio check at pass-time**, gated

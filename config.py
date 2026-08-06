@@ -69,11 +69,11 @@ VOLUME_MULTIPLIER     = 0.7       # volume must be >= the 20-period MEDIAN
                                   # rolling MEAN that outlier spike bars were
                                   # dragging far above what a typical bar
                                   # looks like. vol_avg is now a rolling
-                                  # MEDIAN, which is robust to those spikes,
-                                  # so 1.0x against the median is a fair bar:
-                                  # "at least typical volume", not a true spike
-                                  # requirement anymore. Revisit if this proves
-                                  # too loose once real trades start flowing.
+                                  # MEDIAN, which is robust to those spikes.
+                                  # 1.0x against the median was the first cut
+                                  # after that fix, then loosened further to
+                                  # 0.7x. Revisit if this proves too loose
+                                  # once real trades start flowing.
 ATR_PERIOD            = 14
 ATR_STOP_MULTIPLIER   = 1.5      # stop = 1.5x ATR from entry
 ADX_PERIOD            = 14
