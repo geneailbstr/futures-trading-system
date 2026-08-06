@@ -192,10 +192,6 @@ daily report gets delivered regardless of mode.
 | `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD` | **Always** — `bot.py` refuses to start without these | `notify.py` |
 | `NOTIFY_EMAIL` | Always (destination for alerts/reports) | `notify.py` |
 
-`.env.example` also still lists `TRADOVATE_USERNAME`/`PASSWORD`/`ENV`/`CID`/`SEC`/`DEVICE_ID` —
-those were only consumed by a standalone direct-Tradovate-API client that's since been removed
-as dead code (it was never imported by `bot.py`). They're harmless to leave blank.
-
 ---
 
 ## Testing
