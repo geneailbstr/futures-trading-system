@@ -5,7 +5,8 @@
 An automated algorithmic futures trading bot for MNQ and MES micro futures.
 Signals are generated locally in Python, then routed to Tradovate via
 PickMyTrade webhooks. Built to run an evaluation account under MyFundedFutures
-(MFFU) Flex rules.
+(MFFU) Flex rules. MFFU discontinued Flex on 5 Aug 2026; new accounts are
+Builder 25K, and the rule migration is pending (see CHANGELOG.md).
 
 This is a public portfolio repository. Assume anything committed here is read
 by a hiring manager.
@@ -30,6 +31,8 @@ by a hiring manager.
 | `tt_marketdata.py` | tastytrade OAuth + DXLink live feed |
 | `simulator.py` | Backtest / observe-mode execution |
 | `pmt.py` | PickMyTrade payload construction and send |
+| `safety.py` | Live-entry gate: kill switch, feed freshness/source, fill-blind stop-risk ledger, instance lock |
+| `pmt_bracket_test.py` | Guided Tradovate DEMO test for `dollar_sl` units and `close` behavior |
 | `ecocal.py` | Economic calendar blackout windows |
 | `sentiment.py` | Sentiment inputs |
 | `notify.py` | Alerts |
@@ -76,6 +79,23 @@ by a hiring manager.
 
 Any change to this payload must be verified against a real PickMyTrade
 response, not assumed.
+
+- `dollar_sl` UNITS ARE UNVERIFIED — PMT's docs contradict each other (USD per
+  contract vs. price points). `bot.py` sends points × point value × contracts.
+  `SAFETY_SL_MODE` stays `"unverified"` until `pmt_bracket_test.py` has been run
+  on a demo account; only change it from those results.
+
+## Safety gate rules
+
+- `safety.py` gates NEW live entries only. Never gate exits, the 15:45
+  force-close, or the kill-switch flatten.
+- Don't bypass or loosen the gate to get a trade through. If it blocks, the
+  reason is logged; fix the cause.
+- Proxy data (yfinance/Finnhub/Alpha Vantage) is observe-only. Keep
+  `SAFETY_ALLOWED_SOURCES = ["dxlink"]`.
+- The ledger is deliberately pessimistic (every stop assumed hit) because the
+  bot can't see fills. Don't "optimize" it.
+- `safety.py` and `pmt_bracket_test.py` use the standard library only.
 
 ## Safety rules for you (Claude)
 
