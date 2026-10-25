@@ -27,8 +27,10 @@ import config
 # Token is a live credential — loaded from environment, never hardcoded.
 PMT_TOKEN = os.getenv("PICKMYTRADE_TOKEN")
 
-# Default MFFU account id; can be overridden per call if you ever run multiple.
-DEFAULT_ACCOUNT_ID = os.getenv("TRADOVATE_ACCOUNT_ID", "MFFUEVFLX602266002")
+# Account id comes from .env only — no hardcoded fallback. Account numbers
+# don't belong in a public repo, and a stale default could silently route
+# orders to the wrong account.
+DEFAULT_ACCOUNT_ID = os.getenv("TRADOVATE_ACCOUNT_ID")
 
 # PickMyTrade endpoint timeout (seconds)
 _TIMEOUT = 10
@@ -46,6 +48,8 @@ def _preflight(require_sltp=False, dollar_sl=None, dollar_tp=None):
         return False, "PICKMYTRADE_WEBHOOK not set in .env"
     if not PMT_TOKEN:
         return False, "PICKMYTRADE_TOKEN not set in .env"
+    if not DEFAULT_ACCOUNT_ID:
+        return False, "TRADOVATE_ACCOUNT_ID not set in .env"
     if require_sltp:
         if not dollar_sl or dollar_sl <= 0:
             return False, f"dollar_sl must be > 0 (got {dollar_sl})"
