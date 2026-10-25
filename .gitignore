@@ -11,6 +11,11 @@ token.json
 
 # ---- Runtime state & trade data ----
 sim_state.json
+safety_state.json
+safety_state.json.tmp
+.bot.lock
+HALT
+pmt_bracket_results.json
 state/
 *.state
 archive/
