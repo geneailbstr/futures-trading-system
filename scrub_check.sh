@@ -78,14 +78,27 @@ else
 fi
 
 banner "5. Account identifiers"
-acct=$(git grep -nIEi '(account_?id|accountId|acct)[[:space:]]*[=:][[:space:]]*["'"'"'][A-Za-z0-9]' 2>/dev/null \
-        | grep -v -e '\.env\.example' -e 'scrub_check.sh' || true)
+# Real account-number shapes (MFFU eval/funded, Tradovate demo/live) are a hard
+# failure anywhere in tracked files. Placeholders like DEMO... or
+# MFFU_EVAL_EXAMPLE don't match.
+real=$(git grep -nIE '\bMFFU[A-Z]{2,}[0-9]{6,}\b|\b(DEMO|LIVE)[0-9]{6,}\b' 2>/dev/null \
+        | grep -v -e 'scrub_check.sh' || true)
+if [[ -n "$real" ]]; then
+  flag "real-looking account numbers in tracked files:"
+  echo "$real" | sed 's/^/      /'
+fi
+# Assignments like account_id = "..." AND getenv defaults like
+# os.getenv("TRADOVATE_ACCOUNT_ID", "...") — the second form slipped past the
+# original check.
+acct=$(git grep -nIEi \
+        -e '(account_?id|accountId|acct)[[:space:]]*[=:][[:space:]]*["'"'"'][A-Za-z0-9]' \
+        -e 'getenv\([[:space:]]*["'"'"'][A-Z_]*ACCOUNT[A-Z_]*["'"'"'][[:space:]]*,[[:space:]]*["'"'"'][A-Za-z0-9]' \
+        2>/dev/null | grep -v -e '\.env\.example' -e 'scrub_check.sh' -e '^tests/' || true)
 if [[ -n "$acct" ]]; then
   warn "possible account IDs — confirm these are placeholders:"
   echo "$acct" | sed 's/^/      /'
-else
-  ok "no hardcoded account identifiers found"
 fi
+[[ -z "$real" && -z "$acct" ]] && ok "no hardcoded account identifiers found"
 
 echo
 if [[ $FINDINGS -gt 0 ]]; then

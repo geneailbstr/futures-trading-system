@@ -177,6 +177,31 @@ def _cache_key(symbol, timeframe):
     return f"{symbol}_{timeframe}"
 
 
+# ── Safety: feed freshness + source tracking (safety.FeedGuard) ──
+# bot.py attaches a guard at startup. get_bars() reports which source served
+# each 5-min request and when its newest closed bar started, so live entries
+# can be refused on delayed, stalled or proxy data.
+_feed_guard = None
+
+
+def set_feed_guard(guard):
+    global _feed_guard
+    _feed_guard = guard
+
+
+def _note_bars(symbol, timeframe, df, source):
+    if _feed_guard is None or timeframe != "5min" or df is None:
+        return
+    try:
+        idx = pd.DatetimeIndex(df.index)
+        if idx.tz is None:
+            idx = idx.tz_localize("UTC")   # tastytrade index is naive UTC
+        _feed_guard.on_bar_series(symbol, idx.to_pydatetime(), source)
+        _feed_guard.set_active_source(source)
+    except Exception as e:
+        print(f"   ⚠️ feed guard update failed for {symbol}: {e}")
+
+
 def get_bars(symbol, timeframe="5min", count=100):
     """
     Get OHLCV bars with automatic failover across sources.
@@ -222,6 +247,7 @@ def get_bars(symbol, timeframe="5min", count=100):
             _df = tt_marketdata.get_bars_tastytrade(symbol, timeframe, count)
             if _df is not None and len(_df) >= min_rows:
                 _cache[key] = (now, _df)
+                _note_bars(symbol, timeframe, _df, "dxlink")
                 return _df
             print(f'   ⚠️ tastytrade returned insufficient bars for {symbol} '
                   f'({0 if _df is None else len(_df)}/{min_rows})')
@@ -248,6 +274,7 @@ def get_bars(symbol, timeframe="5min", count=100):
         df = _get_bars_yfinance(proxy, timeframe, count)
         if df is not None and len(df) >= min_rows:
             _cache[key] = (now, df)
+            _note_bars(symbol, timeframe, df, "yfinance")
             return df
 
         if FINNHUB_KEY:
@@ -255,6 +282,7 @@ def get_bars(symbol, timeframe="5min", count=100):
             if df is not None and len(df) >= min_rows:
                 print(f"   (using Finnhub proxy fallback for {symbol})")
                 _cache[key] = (now, df)
+                _note_bars(symbol, timeframe, df, "finnhub")
                 return df
 
         if ALPHA_VANTAGE_KEY:
@@ -262,6 +290,7 @@ def get_bars(symbol, timeframe="5min", count=100):
             if df is not None and len(df) >= min_rows:
                 print(f"   (using Alpha Vantage proxy fallback for {symbol})")
                 _cache[key] = (now, df)
+                _note_bars(symbol, timeframe, df, "alphavantage")
                 return df
 
         # Last resort only — Databento Historical may be stale intraday
@@ -271,6 +300,7 @@ def get_bars(symbol, timeframe="5min", count=100):
                 print(f"   ⚠️ Using Databento Historical for intraday {symbol} — "
                       f"may be stale (free tier has no live access)")
                 _cache[key] = (now, df)
+                _note_bars(symbol, timeframe, df, "databento_historical")
                 return df
 
     else:

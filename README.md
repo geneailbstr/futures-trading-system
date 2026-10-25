@@ -1,5 +1,7 @@
 # Algorithmic Futures Trading System
 
+[![tests](https://github.com/geneailbstr/futures-trading-system/actions/workflows/tests.yml/badge.svg)](https://github.com/geneailbstr/futures-trading-system/actions/workflows/tests.yml)
+
 A Python trading bot for MNQ and MES micro futures. It authenticates against
 tastytrade's OAuth/DXLink feed for real-time CME data, evaluates an
 EMA/RSI/VWAP/ATR strategy across two timeframes on every polling cycle,
@@ -52,7 +54,9 @@ flowchart LR
     I -- true --> J[simulator.py<br/>paper fill, MFFU rules modeled]
     I -- false --> K{PMT_TEMPLATE_VERIFIED}
     K -- false --> X2[send blocked]
-    K -- true --> L[pmt.py<br/>webhook payload]
+    K -- true --> S{safety.py gate<br/>kill switch · fresh DXLink bars<br/>stop-risk budget · one live host}
+    S -- refuses --> X3[entry blocked + logged]
+    S -- allows --> L[pmt.py<br/>webhook payload]
     L --> M[PickMyTrade]
     M --> N[Tradovate<br/>broker account]
 
@@ -83,6 +87,8 @@ directly.
 | `risk.py` | Position sizing (adaptive to win/loss streaks), daily circuit breakers, and the MFFU consistency look-back check |
 | `simulator.py` | Paper-fill engine used while `SIMULATION_MODE = True` — models slippage, commissions, and the full MFFU Flex/Rapid rule set (eval, funded, payout) |
 | `pmt.py` | Builds and sends the PickMyTrade webhook payload; the actual order-routing path when `SIMULATION_MODE = False` |
+| `safety.py` | Last gate before any live entry: kill switch, stale/proxy-data guard, fill-blind stop-risk ledger, single-instance lock. Standard library only |
+| `pmt_bracket_test.py` | Guided Tradovate **demo** test that settles how PickMyTrade interprets `dollar_sl` and what a `close` alert does |
 | `ecocal.py` | Economic-calendar blackout windows (ForexFactory feed) — full-stop on Tier 1 events, reduced size on Tier 2 |
 | `sentiment.py` | Optional Claude-based headline sentiment check, gated by `USE_SENTIMENT` (off by default) |
 | `logger.py` | CSV trade log + console status printing |
@@ -106,8 +112,25 @@ The combination that matters is `SIMULATION_MODE = True` with `USE_REAL_DATA = T
 fills. It's how the system was validated against live conditions with no capital exposed.
 
 Turning off `SIMULATION_MODE` alone is not enough to place an order; the webhook gate has to
-be satisfied separately, and `pmt.py` additionally refuses to send if `PICKMYTRADE_WEBHOOK`
-or `PICKMYTRADE_TOKEN` aren't set.
+be satisfied separately, and `pmt.py` additionally refuses to send if `PICKMYTRADE_WEBHOOK`,
+`PICKMYTRADE_TOKEN` or `TRADOVATE_ACCOUNT_ID` aren't set.
+
+### Live safety gate (`safety.py`)
+
+Every **new live entry** passes one more check, `GATE.check_entry()`, right before `pmt.py`.
+Exits, the 15:45 force-close and the kill-switch flatten are never gated.
+
+| Refuses the entry when… | Why |
+|---|---|
+| A `HALT` file exists (`python3 safety.py halt`) | Kill switch you can trigger over SSH from a phone. `halt --flatten` also closes everything within 15 s. |
+| The newest closed 5-min bar is older than 5 min + 90 s | A delayed or stalled feed makes signals fire late. Expired real-time entitlements fail silently, so this is checked on every entry. |
+| The bars came from yfinance / Finnhub / Alpha Vantage | Proxy ETFs have different hours, levels and gaps. Fallback keeps the bot running in **observe-only** mode instead of trading on them. |
+| Today's total stop risk would exceed the daily loss limit ($500) | Eval accounts have no broker API, so the bot can't see fills. The ledger assumes every stop sent today gets hit. |
+| Price / stop / target is missing, or size passes 20 micros | No entry without a stop. Empty price is a known PickMyTrade rejection. |
+| This machine isn't `BOT_LIVE_HOST` | Dev laptop and VPS can never both send live orders. A file lock also stops two copies on one machine. |
+
+In observe mode the gate runs too, but only logs what live mode *would* refuse
+(`SAFETY (observe): …`), so a reconnected feed can be validated before any money is at risk.
 
 ---
 
@@ -182,7 +205,9 @@ daily report gets delivered regardless of mode.
 
 | Variable | Required when | Used by |
 |---|---|---|
-| `TRADOVATE_ACCOUNT_ID` | Live mode (`pmt.py` default account id) | `pmt.py` |
+| `TRADOVATE_ACCOUNT_ID` | Live mode — no hardcoded fallback, `pmt.py` refuses to send without it | `pmt.py` |
+| `BOT_LIVE_HOST` | Live mode — hostname of the one machine allowed to send live orders | `safety.py` |
+| `PMT_DEMO_ACCOUNT_ID` | Only for `pmt_bracket_test.py` (must start with `DEMO`) | `pmt_bracket_test.py` |
 | `TASTYTRADE_CLIENT_SECRET` / `TASTYTRADE_REFRESH_TOKEN` | Whenever real market data is pulled (`USE_REAL_DATA = True`, the default) | `tt_marketdata.py` |
 | `PICKMYTRADE_TOKEN` / `PICKMYTRADE_WEBHOOK` | Live mode only (`SIMULATION_MODE = False`) | `pmt.py` |
 | `DATABENTO_API_KEY` | Optional — enables the Databento proxy/live fallback tier | `marketdata.py` |
@@ -201,8 +226,17 @@ pip install -r requirements.txt
 pytest tests/ -v
 ```
 
-43 unit tests: 21 in `tests/test_risk.py`, 22 in `tests/test_strategy.py`. Neither suite makes
-a live network call at test time.
+131 tests, none of which make a network call. CI runs them on every push and pull request
+(Python 3.12 and 3.13), along with a dry run of `pmt_bracket_test.py` and `scrub_check.sh`
+across the full commit history.
+
+| Suite | Tests | Covers |
+|---|---|---|
+| `tests/test_risk.py` | 21 | `RiskManager` sizing and circuit breakers |
+| `tests/test_strategy.py` | 22 | Signal logic against recorded MNQ bars |
+| `tests/test_safety.py` | 66 | Feed guard, stop-risk ledger, kill switch, lock, PMT payload lint |
+| `tests/test_safety_wiring.py` | 6 | `marketdata.py` → feed guard, naive-UTC and tz-aware timestamps |
+| `tests/test_pmt_bracket_test.py` | 16 | Demo-test verdict logic, account guard, a full scripted session |
 
 **`tests/test_risk.py`** covers `RiskManager`'s position sizing and daily circuit breakers.
 Thresholds are read from `config.py` rather than hardcoded, so retuning risk parameters
@@ -260,6 +294,26 @@ so the system logs which tier it's running on rather than pretending the data is
 An early version lost position state on a mid-session restart. State now persists after every
 trade, so the system resumes from disk rather than from a blank slate.
 
+**Trading blind on fills.**
+Prop-firm evaluation accounts don't get Tradovate API access, so the bot can send orders but
+never see whether they filled or where they exited. Rather than pretend otherwise, `safety.py`
+keeps a deliberately pessimistic ledger: every stop it sends is assumed to be hit, and new
+entries stop once that worst case reaches the daily loss limit. An end-to-end test of the live
+path caught a bug here before it shipped: two entries booked in the same second shared a
+ledger key, and the second silently erased the first one's risk.
+
+**Vendor docs that disagree with themselves.**
+PickMyTrade's documentation describes `dollar_sl` as a per-contract dollar amount in one
+place and works an example as a price-point distance in another. On MNQ those differ by 2×,
+and on MES by 5×. Until it's settled, the risk ledger sizes every stop at the worst of the
+three readings, and `pmt_bracket_test.py` walks through a 15-minute demo-account test that
+answers it from what Tradovate actually does.
+
+**A secret scanner with a blind spot.**
+`scrub_check.sh` matched `account_id = "..."` but not an account number passed as an
+`os.getenv()` default, so one sat in `pmt.py` unnoticed. The fallback is gone, and the
+scanner now hard-fails on real account-number shapes and flags `getenv` defaults.
+
 ---
 
 ## Tooling
@@ -272,15 +326,20 @@ flags state or log files that shouldn't be committed.
 ./scrub_check.sh
 ```
 
-It exits non-zero on a finding, so it can be wired into a pre-commit hook or CI step.
+It exits non-zero on a finding, and runs in CI on every push.
 
 ---
 
 ## Status
 
-Running in observe mode against live data. The execution path (`pmt.py` → PickMyTrade →
-Tradovate) is implemented and tested against the broker's payload schema, but remains gated
-behind `SIMULATION_MODE` and `PMT_TEMPLATE_VERIFIED`.
+Running in observe mode. The execution path (`pmt.py` → PickMyTrade → Tradovate) is
+implemented, but remains gated behind `SIMULATION_MODE`, `PMT_TEMPLATE_VERIFIED` and the
+`safety.py` gate.
+
+MFFU discontinued the Flex plan on 5 Aug 2026. Existing Flex accounts keep their rules, and
+new accounts move to the Builder 25K plan. The rule changes for Builder (no eval consistency
+rule, $600 soft daily loss limit, 50% consistency per payout cycle, payout buffer) are next.
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## Stack
 

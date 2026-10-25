@@ -202,3 +202,23 @@ PICKMYTRADE_WEBHOOK   = os.getenv("PICKMYTRADE_WEBHOOK")
 # rebuilt to match the JSON that PickMyTrade's Generate Alert produces
 # (dollar-based SL/TP recommended — scale-independent of proxy data)
 PMT_TEMPLATE_VERIFIED = True
+
+# ─────────────────────────────────────────
+# SAFETY GUARDS (safety.py) — gate NEW live entries only, never exits
+# ─────────────────────────────────────────
+# Only this machine may send live orders (run `hostname` on the VPS and put it
+# in that machine's .env). Unset = no machine can go live.
+LIVE_HOST = os.getenv("BOT_LIVE_HOST")
+# How PickMyTrade reads dollar_sl. Its docs disagree, so "unverified" sizes
+# risk at the worst of: USD per contract / USD per order / price points.
+# Run pmt_bracket_test.py on a Tradovate DEMO account, then set the result.
+SAFETY_SL_MODE = "unverified"
+# The bot can't see fills on eval accounts, so every entry's stop is assumed
+# hit. Total stop risk sent per day stays under the daily loss limit ($500).
+SAFETY_DAILY_LOSS_BUDGET = ACCOUNT_SIZE * DAILY_LOSS_LIMIT
+SAFETY_MAX_TOTAL_MICROS = 20             # Flex & Builder 25K: 2 minis / 20 micros
+SAFETY_ALLOWED_SOURCES = ["dxlink"]      # proxy data (yfinance etc.) is observe-only
+SAFETY_MAX_BAR_LAG_SECONDS = 90          # newest closed 5-min bar may be ≤ 5m + 90s old
+# tastytrade bars are fetched per call (no persistent socket), so there is no
+# message stream to watch for gaps.
+SAFETY_MAX_MESSAGE_GAP_SECONDS = None

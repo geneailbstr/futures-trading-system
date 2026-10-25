@@ -24,6 +24,7 @@ import logger
 import notify
 import sentiment
 import pmt
+import safety
 
 ET = pytz.timezone("America/New_York")
 
@@ -78,6 +79,13 @@ prev_high      = None
 prev_low       = None
 gap_detected   = False
 session_active = False
+
+# Safety guards (safety.py): kill switch, feed freshness, fill-blind risk
+# ledger, single instance. GATE is built in main() once the lock is held.
+SAFETY            = safety.SafetySettings.from_config(config)
+SAFETY_STATE_FILE = os.path.join(os.path.dirname(__file__), "safety_state.json")
+GATE              = None
+_INSTANCE_LOCK    = None
 
 
 def is_trading_day():
@@ -260,7 +268,27 @@ def trading_loop():
 
         logger.print_trade_signal(signal, contracts)
 
+        # Convert point-distance risk to DOLLAR SL/TP for PMT.
+        # signal["risk"] = points from entry to stop (per strategy.py).
+        # NOTE: this assumes PMT reads dollar_sl as USD for the WHOLE order.
+        # pmt_bracket_test.py settles whether that's true.
+        action     = "buy" if signal["direction"] == "Buy" else "sell"
+        _pv        = config.CONTRACT_SPECS.get(symbol, 2.0)
+        _dollar_sl = round(signal["risk"] * _pv * contracts, 2)
+        _dollar_tp = round(signal["risk"] * config.PROFIT_TARGET_1 * _pv * contracts, 2)
+
+        intent = safety.EntryIntent(symbol=symbol, side=action, qty=int(contracts),
+                                    price=signal["entry"],
+                                    dollar_sl=_dollar_sl, dollar_tp=_dollar_tp)
+        decision = GATE.check_entry(intent, live=not config.SIMULATION_MODE)
+
         if config.SIMULATION_MODE:
+            if GATE.kill.state():
+                print(f"SAFETY: kill switch is set — skipping SIM entry on {symbol}")
+                continue
+            if not decision:
+                # Observe mode keeps trading on proxy data; log what LIVE would refuse.
+                print(f"   SAFETY (observe): live mode would block {symbol} — {decision}")
             # Simulate the trade with realistic costs, exit at target1 for now.
             # Pass target2 as the peak estimate — price plausibly traded through
             # there before settling at target1, which is what actually drives
@@ -275,16 +303,18 @@ def trading_loop():
                 peak_price  = signal["target2"]
             )
         else:
-            action  = "buy" if signal["direction"] == "Buy" else "sell"
-            # Convert point-distance risk to DOLLAR SL/TP for PMT.
-            # signal["risk"] = points from entry to stop (per strategy.py).
-            _pv = config.CONTRACT_SPECS.get(symbol, 2.0)
-            _dollar_sl = round(signal["risk"] * _pv * contracts, 2)
-            _dollar_tp = round(signal["risk"] * config.PROFIT_TARGET_1 * _pv * contracts, 2)
+            if not decision:
+                print(f"🚫 SAFETY blocked {action.upper()} {contracts} {symbol}: {decision}")
+                continue
             success = pmt.send_trade(
                 symbol=symbol, action=action, quantity=contracts,
                 dollar_sl=_dollar_sl, dollar_tp=_dollar_tp
             )
+            # Booked even if the POST failed: a timeout can still place the order,
+            # and the bot can't see fills to find out.
+            GATE.ledger.record_entry(f"{symbol}-{datetime.now(ET):%Y%m%d-%H%M%S}",
+                                     symbol, int(contracts), _dollar_sl)
+            GATE.ledger.save(SAFETY_STATE_FILE)
             print(f"Signal {'sent' if success else 'FAILED'} to PickMyTrade for {symbol}")
             logger.print_status(risk_manager, market_regime, restriction)
 
@@ -361,7 +391,7 @@ def end_of_day():
     print(f"{'='*50}")
 
     if not config.SIMULATION_MODE:
-        pmt.close_all()
+        _close_all_and_book("EOD")
 
     session_active = False
     time.sleep(5)
@@ -398,6 +428,51 @@ def health_check():
     pass  # marketdata module is stateless, no reconnect needed
 
 
+def _close_all_and_book(reason):
+    """Flatten via PMT. On success the day's open risk is booked as closed;
+    on failure it stays on the ledger (and carries into tomorrow) and you get an alert."""
+    if pmt.close_all():
+        GATE.ledger.record_flatten()
+        GATE.ledger.save(SAFETY_STATE_FILE)
+        return True
+    print(f"❌ {reason}: close_all FAILED — check Tradovate now")
+    try:
+        notify.send_alert(f"Bot Alert: {reason} close FAILED",
+                          "pmt.close_all() reported a failure. Check Tradovate for open "
+                          "positions and working orders, and flatten manually if needed.")
+    except Exception as e:
+        print(f"   (alert email failed too: {e})")
+    return False
+
+
+def _safety_close(symbol):
+    """send_close for the kill switch. Raises on failure so the alert says FAILED."""
+    if config.SIMULATION_MODE:
+        print(f"   SIM: kill switch would close {symbol}")
+        return
+    if not pmt.close_position(symbol):
+        raise RuntimeError("pmt.close_position returned False")
+
+
+def safety_poll():
+    """Acts on `python3 safety.py halt --flatten` within 15s, any time of day."""
+    if GATE is None:
+        return
+    results = GATE.poll_kill_switch(send_close=_safety_close, symbols=config.INSTRUMENTS)
+    if not results:
+        return
+    GATE.ledger.save(SAFETY_STATE_FILE)
+    summary = ", ".join(f"{k}: {v}" for k, v in results.items())
+    print(f"🛑 KILL SWITCH FLATTEN — {summary}")
+    try:
+        notify.send_alert("Bot Alert: FLATTEN executed",
+                          f"{summary}\n\nNew entries stay halted until "
+                          f"`python3 safety.py resume`. Confirm flat in Tradovate — "
+                          f"the bot cannot see fills.")
+    except Exception as e:
+        print(f"   (alert email failed: {e})")
+
+
 def setup_schedule():
     weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday"]
     for day in weekdays:
@@ -406,13 +481,39 @@ def setup_schedule():
         getattr(schedule.every(), day).at("16:05").do(send_report)
 
     schedule.every(60).seconds.do(trading_loop)
+    schedule.every(15).seconds.do(safety_poll)
     schedule.every(5).minutes.do(health_check)
 
     print("Schedule configured:")
     print("  Pre-market:  06:00 ET weekdays")
     print("  Trading:     Every 60 seconds")
     print("  EOD close:   15:45 ET weekdays")
-    print("  Email:       16:05 ET weekdays\n")
+    print("  Email:       16:05 ET weekdays")
+    print("  Kill switch: checked every 15 seconds\n")
+
+
+def _start_safety():
+    """One bot per machine, then build the gate and attach the feed guard."""
+    global GATE, _INSTANCE_LOCK
+    try:
+        _INSTANCE_LOCK = safety.InstanceLock(SAFETY.lock_file).acquire()
+    except safety.AlreadyRunning as e:
+        print(f"ERROR: {e}")
+        return False
+    GATE = safety.SafetyGate(SAFETY, ledger=safety.RiskLedger.load(SAFETY_STATE_FILE, SAFETY))
+    marketdata.set_feed_guard(GATE.feed)
+
+    print(f"Safety: kill switch {GATE.kill.state() or 'clear'} | "
+          f"stop-risk budget ${SAFETY.daily_loss_budget:,.0f}/day | "
+          f"dollar_sl mode {SAFETY.sl_mode}")
+    if SAFETY.sl_mode == "unverified":
+        print("   dollar_sl units unverified — risk sized at worst case. "
+              "Run pmt_bracket_test.py on a DEMO account.")
+    if not config.SIMULATION_MODE:
+        problem = safety.host_problem(SAFETY)
+        if problem:
+            print(f"   WARNING: {problem} — every live entry will be blocked")
+    return True
 
 
 def main():
@@ -435,6 +536,8 @@ def main():
         return
 
     print("All required credentials loaded")
+    if not _start_safety():
+        return
     print(f"Market data source: {marketdata.data_source_status()}")
     if config.FINNHUB_API_KEY:
         print("Finnhub fallback: enabled")
@@ -460,7 +563,7 @@ def main():
             print("\nBot stopped by user")
             if session_active and not config.SIMULATION_MODE:
                 print("Closing positions via PickMyTrade...")
-                pmt.close_all()
+                _close_all_and_book("Shutdown")
             print("Goodbye\n")
             break
         except Exception as e:
